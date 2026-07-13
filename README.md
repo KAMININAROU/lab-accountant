@@ -2,7 +2,7 @@
 # lab-accountant
 This is a project for managing financial things for my laboratory.
 
-# MacOS is Recommanded
+# MacOS is Recommended
 ## It can be deployed on Windows but need some adjustments on virtual environments or python things, which are very complex.
 ## If you just want to download the app but not the codes, just go to the Release part and download the lab-acc.rar file.
 =======================================================
@@ -47,7 +47,7 @@ python .\main.py
 
 
 ## 試行(For Windows)
-### VS code is highly recommanded.
+### VS code is highly recommended.
 ------------------------------------------
 ダウンロード先のフォルダーを事前に作ってください。
 
