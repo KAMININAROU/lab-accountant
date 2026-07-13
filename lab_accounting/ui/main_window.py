@@ -1400,7 +1400,7 @@ class SettingsPage(BasePage):
                     "手取額: 区分と日額(支払総額)から自動計算",
                     "",
                     "このMVP版では設定ファイル config/app_config.json を編集して変更します。",
-                    "Bugやシステムの不具合がありましたら、lunputian@outlook.com までご連絡ください。",
+                    "Bugやシステムの不具合がありましたら、Githubでhttps://github.com/KAMININAROU/lab-accountantのIssueでご報告ください。",
                 ]
             )
         )
