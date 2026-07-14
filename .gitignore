@@ -220,4 +220,6 @@ __marimo__/
 =======
 *.db
 history.txt
+# System
+.DS_Store
 >>>>>>> master
