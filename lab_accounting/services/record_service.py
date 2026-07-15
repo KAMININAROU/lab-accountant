@@ -49,11 +49,13 @@ class RecordService:
 
     def delete_many(self, record_ids: list[int]) -> None:
         deleted: list[str] = []
+        existing_ids: list[int] = []
         for record_id in record_ids:
             record = self.repo.get(record_id)
             if not record:
                 continue
-            self.repo.delete(record_id)
+            existing_ids.append(record_id)
             deleted.append(f"{record['person_name']} {record['record_date']} {record['item_name']}")
+        self.repo.delete_many(existing_ids)
         if deleted:
             self.logs.add("INFO", "RECORDS_DELETED", f"Records deleted: {len(deleted)}; " + " | ".join(deleted))

@@ -1,144 +1,112 @@
-<<<<<<< HEAD
 # lab-accountant
-This is a project for managing financial things for my laboratory.
 
-# MacOS is Recommended
-## It can be deployed on Windows but need some adjustments on virtual environments or python things, which are very complex.
-## If you just want to download the app but not the codes, just go to the Release part and download the lab-acc.rar file.
-=======================================================
+研究室向けの業務委託報酬・使用費目管理アプリです。Python、PyQt5、SQLite、openpyxl で動作します。
 
-# 研究室業務委託報酬管理
+## 主な機能
 
-PyQt5 で動く研究室向けの業務委託報酬・使用費目管理アプリです。
-
-## 主要機能
-
-- 人員管理
-- 款項入力
+- 人員管理（カナ・備考・色・居住区分・日額）
+- 案件入力と人／種類による検索
 - 個人明細
-- 月次精算プレビュー・保存・確定
-- 年度集計
+- 月次精算の計算プレビュー、下書き保存、確定、削除
+- 年度集計と月別集計
 - 税額計算
-- Excel 出力
-- 操作ログ表示
-- 5分ごとの自動バックアップ
-- JSTログ時刻表示
-- 選択人員のExcel出力
-- 月次精算行のパスワード付き削除
-- 人員・案件・個人明細行のパスワード付き削除
+- 人員情報・案件・月次精算明細・集計の Excel 出力
+- 操作ログ
+- SQLite バックアップと復元
+- 起動中の Splash Screen
 
-## 試行(For MacOS)
-### !!!! パスに漢字が入らないようにしてください。できれば簡単で！！！
+年度集計は、人員・案件・月次精算から計算する読み取り専用の結果です。年度集計画面から元データを削除することはできません。
 
+## 試行（macOS）
+
+パスに漢字を含まないフォルダーでの実行を推奨します。
+
+```bash
 cd /path/to/LabAccounting
-
 python3 -m venv .venv
-
 source .venv/bin/activate
-
-pip install -r requirements.txt
-
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 python main.py
+```
 
-## Debug(For MacOS)
+## 試行（Windows）
 
-python -m py_compile main.py lab_accounting/**/*.py tools/*.py
-
-python .\main.py
-
-
-## 試行(For Windows)
-### VS code is highly recommended.
-### !!!! パスに漢字が入らないようにしてください。できれば簡単で！！！
-------------------------------------------
-ダウンロード先のフォルダーを事前に作ってください。
-
-vscodeのTerminalで以下のコマンドを実行：
-
-python --version
-
-もしエラーやpython not foundなどが出てきたら、pythonをインストールしてください。(インストール後、vscodeを再起動してください。)
-------------------------------------------
-cd (事前に作ったフォルダーのパス)
-
-python -m venv .myvenv
-
-.\.myvenv\Scripts\Activate.ps1
-
-（うまく行ったら、(myvenv)という表記が現れる）
-
+```powershell
+cd C:\path\to\LabAccounting
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-
-python -m pip install PyQt5 openpyxl
-
+python -m pip install -r requirements.txt
 python .\main.py
+```
 
+## Debug とテスト
 
-### Trouble Shooting
-### 1.
-- ModuleNotFoundError: No module named 'PyQt5'
-- ModuleNotFoundError: No module named 'openpyxl'
-というエラーが出た場合、以下の命令を実行：
+構文確認:
 
-deactivate
+```bash
+python -m compileall -q main.py lab_accounting tools
+```
 
-Remove-Item -Recurse -Force .myvenv
+自動テスト:
 
-python -m venv .myvenv
+```bash
+python -m unittest discover -s tests -v
+```
 
-.\.myvenv\Scripts\Activate.ps1
+画面を表示しない環境では、次のように実行できます。
 
-python -m pip install --upgrade pip
+```bash
+QT_QPA_PLATFORM=offscreen python -m unittest discover -s tests -v
+```
 
-python -m pip install PyQt5 openpyxl
+## データベース移行
 
-python .\main.py
+起動時に `lab_accounting.db` の構造を自動確認します。旧版データベースの場合は、人員、案件、月次精算、ログ、設定と既存 ID を保持したまま、次の移行を一度だけ実行します。
 
-### 2.
-- > python main.py qt.qpa.plugin: Could not find the Qt platform plugin "windows" in "" This application failed to start because no Qt platform plugin could be initialized. Reinstalling the application may fix this problem.
+- 人員の独立した `memo` 列を追加
+- 月次精算の「人員＋年度＋対象月」唯一制約を削除
+- 検索用の通常索引を作成
+- 外部キーと SQLite の整合性を確認
 
-まず、myvenv という環境を作り直す。
-deactivate
+同じ移行は繰り返し実行してもデータを重複させません。旧版バックアップを復元した場合も、復元直後に同じ移行を実行します。
 
-Remove-Item -Recurse -Force .myvenv
+## 月次精算
 
-python -m venv .myvenv
-
-.\.myvenv\Scripts\Activate.ps1
-
-必要なＤＬＬファイルがあるかどうかをチェック：
-
-Get-ChildItem -Recurse .\.venv\Lib\site-packages -Filter qwindows.dll
-（これが出たら正解：Directory: D:\lab-acc\lab-accountant\.myvenv\Lib\site-packages\PyQt5\Qt5\plugins\platforms）
-
-パスが出ても行かない場合：
-
-$env:QT_QPA_PLATFORM_PLUGIN_PATH = (Resolve-Path ".\.myvenv\Lib\site-packages\PyQt5\Qt5\plugins\platforms").Path
-
-python .\main.py
-
-
-データベースは `lab_accounting.db` に保存されます。やり直す場合は、アプリを閉じてからこのファイルを退避または削除してください。
+- 同じ人の別月データはそれぞれ独立して保存されます。
+- 同じ人・同じ月にも、補充分を別の精算として追加保存できます。
+- 削除は `payment_id` 単位で行い、同月の別データには影響しません。
+- 年度、対象月、人員、日数、計算モード、割合を変更すると古いプレビューは無効になります。
+- 日数モードの手取額は、日額総額、支給日数、実効税率から自動計算されます。
+- 支給日数は `0.5` から `7` まで、`0.5` 刻みです。
 
 ## バックアップ
 
-通常の入力データは `lab_accounting.db` に即時保存され、アプリ起動時に自動で読み込まれます。
+通常データは `lab_accounting.db` に即時保存され、次回起動時に自動で読み込まれます。
 
-自動バックアップは5分ごとに `backups/` に作成されます。最新バックアップは `backups/lab_accounting_latest.db` です。
+初期設定では自動バックアップを 5 分ごとに作成し、`lab_accounting_auto_*.db` の最新 5 個だけを保持します。次のファイルは自動整理の対象外です。
 
-手動操作はアプリの `設定` ページで行います。
+- `lab_accounting_manual_*.db`
+- `lab_accounting_before_restore_*.db`
+- `lab_accounting_latest.db`
+- ユーザーが追加したその他の `.db` ファイル
 
-- `今すぐバックアップ`: その時点のデータベースを `backups/` に保存します。
-- `バックアップを読み込む`: `.db` バックアップファイルを選択して復元します。復元前の現在データも `before_restore` として退避されます。
+手動バックアップと復元はアプリの `設定` ページで行います。復元前には現在のデータベースを `before_restore` として保存し、復元後に移行と整合性チェックを実行します。
 
-## 特殊ルール
+## 設定
 
-- 月次精算の `支給日数` は `0.5` から `7` まで、`0.5` 刻みです。
-- 月次精算の行削除は、表で行を選択して `選択行を削除` を押します。
-- 人員管理の行削除は、表で行を選択して `選択行を削除` を押します。
-- 案件入力の行削除は、表で行を選択して右クリックし、`選択行を削除` を選びます。複数行選択も可能です。
-- 個人明細の行削除は、表で行を選択して `選択行を削除` を押します。
-- 削除操作はログに保存されます。
-- Excel出力では対象人員を複数選択できます。未選択の場合は全員出力します。
-====================================================================
->>>>>>> master
+`config/app_config.json` で次の項目を変更できます。
+
+- アプリ名、バージョン、起動時の説明文
+- 会計年度と年度開始月
+- 居住者／非居住者税率
+- 既定の日額総額
+- Excel 出力先
+- バックアップ先、間隔、保持数
+
+旧設定ファイルに新しい項目がない場合は既定値を使用します。
+
+## 削除とログ
+
+人員、案件、個人明細、月次精算の削除には削除パスワードが必要です。人員を削除すると、その人に関連する案件と月次精算も削除されます。削除や人員情報の変更は操作ログに記録されます。

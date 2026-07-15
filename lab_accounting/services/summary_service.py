@@ -40,7 +40,10 @@ class SummaryService:
         months = fiscal_months(fiscal_year)
         people = self.persons.list(active_only=False)
         payments = self.payments.list({"fiscal_year": fiscal_year})
-        by_key = {(int(row["person_id"]), row["target_month"]): row for row in payments}
+        by_key: dict[tuple[int, str], float] = {}
+        for payment in payments:
+            key = (int(payment["person_id"]), payment["target_month"])
+            by_key[key] = by_key.get(key, 0.0) + float(payment.get(value_field, 0) or 0)
         rows: list[dict] = []
         for person in people:
             pid = int(person["person_id"])
@@ -51,7 +54,7 @@ class SummaryService:
                 "total": 0.0,
             }
             for month in months:
-                value = float(by_key.get((pid, month), {}).get(value_field, 0) or 0)
+                value = by_key.get((pid, month), 0.0)
                 row[month] = value
                 row["total"] += value
             rows.append(row)

@@ -45,7 +45,7 @@ from PyQt5.QtWidgets import (
 from lab_accounting.core.config import AppConfig
 from lab_accounting.core.fiscal_year import fiscal_months, month_label
 from lab_accounting.core.formatters import decimal_text, money
-from lab_accounting.core.tax import calc_from_gross, calc_from_net
+from lab_accounting.core.tax import calc_from_gross, calc_from_net, effective_tax_rate
 from lab_accounting.exporters.excel_exporter import ExcelExporter
 from lab_accounting.repositories.database import Database
 from lab_accounting.repositories.log_repository import LogRepository
@@ -75,7 +75,7 @@ RECORD_TYPE_LABELS = {value: key for key, value in RECORD_TYPES.items()}
 RECORD_TYPE_LABELS.update({"income": "収入"})
 RESIDENT_TYPES = {"居住者": "resident", "非居住者": "nonresident"}
 RESIDENT_LABELS = {value: key for key, value in RESIDENT_TYPES.items()}
-MODES = {"日数": "days", "割合": "ratio", "手入力": "manual"}
+MODES = {"日数": "days", "割合": "ratio"}
 JST = timezone(timedelta(hours=9))
 
 
@@ -130,7 +130,12 @@ class MainWindow(QMainWindow):
         )
         self.summary_service = SummaryService(self.person_repo, self.record_repo, self.payment_repo)
         self.log_service = LogService(self.logs_repo)
-        self.backup_service = BackupService(config.database_path, config.backup_path)
+        self.backup_service = BackupService(
+            config.database_path,
+            config.backup_path,
+            keep_count=config.auto_backup_keep_count,
+            error_logger=lambda message: self.logs_repo.add("ERROR", "AUTO_BACKUP_CLEANUP_FAILED", message),
+        )
         self.backup_timer = QTimer(self)
         self.backup_timer.timeout.connect(self.run_auto_backup)
         self.backup_timer.start(max(1, config.auto_backup_interval_minutes) * 60 * 1000)
@@ -311,6 +316,8 @@ class PersonPage(BasePage):
         self.name = QLineEdit()
         self.display_name = QLineEdit()
         self.name_kana = QLineEdit()
+        self.memo = QLineEdit()
+        self._tax_rate_override: float | None = None
         self.resident_type = QComboBox()
         self.resident_type.addItems(RESIDENT_TYPES.keys())
         self.tax_rate = QLineEdit()
@@ -334,22 +341,24 @@ class PersonPage(BasePage):
         form.addWidget(self.name, 0, 1)
         form.addWidget(QLabel("表示名"), 0, 2)
         form.addWidget(self.display_name, 0, 3)
-        form.addWidget(QLabel("カナ/備考"), 1, 0)
+        form.addWidget(QLabel("カナ"), 1, 0)
         form.addWidget(self.name_kana, 1, 1)
-        form.addWidget(QLabel("区分"), 1, 2)
-        form.addWidget(self.resident_type, 1, 3)
-        form.addWidget(QLabel("税率"), 2, 0)
-        form.addWidget(self.tax_rate, 2, 1)
-        form.addWidget(QLabel("日額(支払総額)"), 2, 2)
-        form.addWidget(self.daily_gross, 2, 3)
-        form.addWidget(QLabel("日額(手取額)"), 3, 0)
-        form.addWidget(self.daily_net, 3, 1)
-        form.addWidget(QLabel("色"), 3, 2)
+        form.addWidget(QLabel("備考"), 1, 2)
+        form.addWidget(self.memo, 1, 3)
+        form.addWidget(QLabel("区分"), 2, 0)
+        form.addWidget(self.resident_type, 2, 1)
+        form.addWidget(QLabel("税率"), 2, 2)
+        form.addWidget(self.tax_rate, 2, 3)
+        form.addWidget(QLabel("日額(支払総額)"), 3, 0)
+        form.addWidget(self.daily_gross, 3, 1)
+        form.addWidget(QLabel("日額(手取額)"), 3, 2)
+        form.addWidget(self.daily_net, 3, 3)
+        form.addWidget(QLabel("色"), 4, 0)
         color_row = QHBoxLayout()
         color_row.addWidget(self.color)
         color_row.addWidget(pick_color)
-        form.addLayout(color_row, 3, 3)
-        form.addWidget(self.active, 4, 1)
+        form.addLayout(color_row, 4, 1)
+        form.addWidget(self.active, 4, 3)
 
         buttons = QHBoxLayout()
         add_btn = QPushButton("新規保存")
@@ -385,8 +394,9 @@ class PersonPage(BasePage):
             "name": self.name.text().strip(),
             "display_name": self.display_name.text().strip(),
             "name_kana": self.name_kana.text().strip(),
+            "memo": self.memo.text().strip(),
             "resident_type": RESIDENT_TYPES[self.resident_type.currentText()],
-            "tax_rate": None,
+            "tax_rate": self._tax_rate_override,
             "daily_gross_amount": self.daily_gross.value(),
             "daily_net_amount": daily_net,
             "color": self.color.text().strip() or "#dbeafe",
@@ -394,6 +404,8 @@ class PersonPage(BasePage):
         }
 
     def current_tax_rate(self) -> float:
+        if self._tax_rate_override is not None:
+            return self._tax_rate_override
         if RESIDENT_TYPES[self.resident_type.currentText()] == "nonresident":
             return self.window.config.nonresident_tax_rate
         return self.window.config.resident_tax_rate
@@ -406,7 +418,9 @@ class PersonPage(BasePage):
 
     def create_person(self) -> None:
         try:
-            self.window.person_service.save(self.values())
+            values = self.values()
+            values["tax_rate"] = None
+            self.window.person_service.save(values)
             self.clear_form()
             self.window.refresh_all()
             self.window.set_app_status("ok", "人員情報を保存しました。", 7000)
@@ -441,8 +455,7 @@ class PersonPage(BasePage):
         if not self.window.verify_delete_password():
             return
         try:
-            for person_id in selected_ids:
-                self.window.person_service.delete(person_id)
+            self.window.person_service.delete_many(selected_ids)
             self.clear_form()
             self.window.refresh_all()
             self.window.set_app_status("ok", "選択人員を削除しました。", 7000)
@@ -460,6 +473,8 @@ class PersonPage(BasePage):
         self.name.setText(person["name"])
         self.display_name.setText(person.get("display_name") or "")
         self.name_kana.setText(person.get("name_kana") or "")
+        self.memo.setText(person.get("memo") or "")
+        self._tax_rate_override = float(person["tax_rate"]) if person.get("tax_rate") is not None else None
         self.resident_type.setCurrentText(RESIDENT_LABELS.get(person["resident_type"], "居住者"))
         self.daily_gross.setValue(int(person["daily_gross_amount"]))
         self.color.setText(person.get("color") or "#dbeafe")
@@ -471,6 +486,8 @@ class PersonPage(BasePage):
         self.name.clear()
         self.display_name.clear()
         self.name_kana.clear()
+        self.memo.clear()
+        self._tax_rate_override = None
         self.resident_type.setCurrentIndex(0)
         self.daily_gross.setValue(max(10000, self.window.config.default_daily_gross_amount))
         self.color.setText("#dbeafe")
@@ -478,8 +495,16 @@ class PersonPage(BasePage):
         self.update_auto_amounts()
 
     def refresh(self) -> None:
-        rows = self.window.person_service.list(active_only=False)
-        headers = ["氏名", "表示名", "区分", "税率", "日額(総額)", "日額(手取)", "色", "状態"]
+        rows = self.window.person_service.list(active_only=False, group_by_color=True)
+        rows.sort(
+            key=lambda person: (
+                normalized_color(person.get("color")),
+                -int(person.get("active") or 0),
+                str(person.get("name") or "").casefold(),
+                int(person["person_id"]),
+            )
+        )
+        headers = ["氏名", "表示名", "カナ", "備考", "区分", "税率", "日額(総額)", "日額(手取)", "色", "状態"]
         self.table.setColumnCount(len(headers))
         self.table.setHorizontalHeaderLabels(headers)
         self.table.setRowCount(len(rows))
@@ -487,6 +512,8 @@ class PersonPage(BasePage):
             values = [
                 person["name"],
                 person.get("display_name") or "",
+                person.get("name_kana") or "",
+                person.get("memo") or "NaN",
                 RESIDENT_LABELS.get(person["resident_type"], person["resident_type"]),
                 decimal_text(self.tax_rate_for_person(person), 4),
                 money(person["daily_gross_amount"]),
@@ -504,9 +531,11 @@ class PersonPage(BasePage):
         finish_table(self.table)
 
     def tax_rate_for_person(self, person: dict) -> float:
-        if person.get("resident_type") == "nonresident":
-            return self.window.config.nonresident_tax_rate
-        return self.window.config.resident_tax_rate
+        return effective_tax_rate(
+            person,
+            self.window.config.resident_tax_rate,
+            self.window.config.nonresident_tax_rate,
+        )
 
     def daily_net_for_person(self, person: dict) -> float:
         return calc_from_gross(person["daily_gross_amount"], self.tax_rate_for_person(person))["net_amount"]
@@ -550,29 +579,25 @@ class RecordPage(BasePage):
 
         filter_box = QGroupBox("検索")
         filters = QHBoxLayout(filter_box)
-        self.filter_year = QSpinBox()
-        self.filter_year.setRange(2000, 2100)
-        self.filter_year.setValue(window.config.fiscal_year)
-        self.filter_month = QComboBox()
         self.filter_person = QComboBox()
         self.filter_type = QComboBox()
         self.filter_type.addItem("すべて", "")
         for label, value in RECORD_TYPES.items():
             self.filter_type.addItem(label, value)
-        self.keyword = QLineEdit()
-        self.keyword.setPlaceholderText("名目・備考")
         search_btn = QPushButton("検索")
+        clear_filter_btn = QPushButton("検索条件をクリア")
         search_btn.clicked.connect(self.refresh)
-        filters.addWidget(QLabel("年度"))
-        filters.addWidget(self.filter_year)
-        filters.addWidget(QLabel("月"))
-        filters.addWidget(self.filter_month)
+        clear_filter_btn.clicked.connect(self.clear_filters)
         filters.addWidget(QLabel("人"))
         filters.addWidget(self.filter_person)
         filters.addWidget(QLabel("種類"))
         filters.addWidget(self.filter_type)
-        filters.addWidget(self.keyword)
         filters.addWidget(search_btn)
+        filters.addWidget(clear_filter_btn)
+        filters.addStretch()
+
+        style_readable_combo(self.person)
+        style_readable_combo(self.filter_person)
 
         self.table = make_table()
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -585,6 +610,7 @@ class RecordPage(BasePage):
 
     def refresh_people(self) -> None:
         current = self.person.currentData()
+        current_filter = self.filter_person.currentData()
         self.person.clear()
         self.filter_person.clear()
         self.filter_person.addItem("すべて", None)
@@ -593,14 +619,19 @@ class RecordPage(BasePage):
             if person["active"]:
                 self.person.addItem(person["name"], person["person_id"])
             self.filter_person.addItem(label, person["person_id"])
-        if current:
+        if current is not None:
             idx = self.person.findData(current)
             if idx >= 0:
                 self.person.setCurrentIndex(idx)
-        self.filter_month.clear()
-        self.filter_month.addItem("すべて", "")
-        for month in fiscal_months(self.filter_year.value()):
-            self.filter_month.addItem(month, month)
+        if current_filter is not None:
+            idx = self.filter_person.findData(current_filter)
+            if idx >= 0:
+                self.filter_person.setCurrentIndex(idx)
+
+    def clear_filters(self) -> None:
+        self.filter_person.setCurrentIndex(0)
+        self.filter_type.setCurrentIndex(0)
+        self.refresh()
 
     def create_record(self) -> None:
         if self.person.currentData() is None:
@@ -631,11 +662,8 @@ class RecordPage(BasePage):
     def refresh(self) -> None:
         self.refresh_people()
         filters = {
-            "fiscal_year": self.filter_year.value(),
-            "target_month": self.filter_month.currentData(),
             "person_id": self.filter_person.currentData(),
             "record_type": self.filter_type.currentData(),
-            "keyword": self.keyword.text().strip(),
         }
         rows = self.window.record_service.list(filters)
         self.displayed_rows = rows
@@ -754,6 +782,7 @@ class PersonalDetailPage(BasePage):
                     "net": row["amount"] if is_manual_payment else 0,
                     "source": "record",
                     "record_id": row["record_id"],
+                    "sort_key": (row["record_date"], 0, int(row["record_id"])),
                 }
             )
         for row in payments:
@@ -768,12 +797,19 @@ class PersonalDetailPage(BasePage):
                     "tax": row["withholding_amount"],
                     "net": row["net_amount"],
                     "source": "payment",
+                    "payment_id": row["payment_id"],
                     "person_id": row["person_id"],
                     "fiscal_year": row["fiscal_year"],
                     "target_month": row["target_month"],
+                    "sort_key": (
+                        f"{row['target_month']}-31",
+                        1,
+                        row.get("created_at") or "",
+                        int(row["payment_id"]),
+                    ),
                 }
             )
-        events.sort(key=lambda row: row["date"])
+        events.sort(key=lambda row: row["sort_key"])
         self.displayed_events = events
         balance = 0.0
         table_rows = []
@@ -840,6 +876,8 @@ class MonthlyClosingPage(BasePage):
         super().__init__(window)
         self.preview_rows: list[dict] = []
         self.displayed_rows: list[dict] = []
+        self.preview_signature: tuple | None = None
+        self._refreshing = False
         layout = QVBoxLayout(self)
         controls = QGridLayout()
         self.year = QSpinBox()
@@ -856,12 +894,16 @@ class MonthlyClosingPage(BasePage):
         self.ratio.setRange(0, 1)
         self.ratio.setSingleStep(0.05)
         self.ratio.setValue(1)
-        self.manual = QDoubleSpinBox()
-        self.manual.setRange(0, 100000000)
-        self.manual.setDecimals(0)
         self.persons = QListWidget()
         self.persons.setSelectionMode(QAbstractItemView.MultiSelection)
-        self.persons.setMaximumHeight(120)
+        self.persons.setMaximumHeight(150)
+        self.persons.setStyleSheet(
+            """
+            QListWidget { font-size: 16px; }
+            QListWidget::item { min-height: 30px; padding: 3px 8px; }
+            QListWidget::item:selected { background: #f59e0b; color: #111827; }
+            """
+        )
         preview_btn = QPushButton("計算プレビュー")
         save_btn = QPushButton("下書き保存")
         confirm_btn = QPushButton("確定")
@@ -883,8 +925,6 @@ class MonthlyClosingPage(BasePage):
         controls.addWidget(self.days, 1, 3)
         controls.addWidget(QLabel("分配割合"), 2, 0)
         controls.addWidget(self.ratio, 2, 1)
-        controls.addWidget(QLabel("手取額"), 2, 2)
-        controls.addWidget(self.manual, 2, 3)
         controls.addWidget(QLabel("人員（未選択なら全員）"), 3, 0)
         controls.addWidget(self.persons, 3, 1, 1, 3)
         button_row = QHBoxLayout()
@@ -895,8 +935,44 @@ class MonthlyClosingPage(BasePage):
         layout.addLayout(controls)
         layout.addLayout(button_row)
         layout.addWidget(self.table, 1)
-        self.year.valueChanged.connect(self.refresh_months)
+        self.year.valueChanged.connect(self._year_changed)
+        self.month.currentIndexChanged.connect(self.invalidate_preview)
+        self.mode.currentIndexChanged.connect(self._mode_changed)
+        self.days.valueChanged.connect(self.invalidate_preview)
+        self.ratio.valueChanged.connect(self.invalidate_preview)
+        self.persons.itemSelectionChanged.connect(self.invalidate_preview)
+        self._mode_changed()
         self.refresh()
+
+    def _year_changed(self) -> None:
+        self.refresh_months()
+        self.invalidate_preview()
+
+    def _mode_changed(self) -> None:
+        is_days = MODES[self.mode.currentText()] == "days"
+        self.days.setEnabled(is_days)
+        self.ratio.setEnabled(not is_days)
+        self.invalidate_preview()
+
+    def current_signature(self) -> tuple:
+        return (
+            self.year.value(),
+            self.month.currentData(),
+            tuple(sorted(self.selected_person_ids())),
+            MODES[self.mode.currentText()],
+            self.days.value(),
+            self.ratio.value(),
+        )
+
+    def invalidate_preview(self) -> None:
+        if self._refreshing:
+            return
+        had_preview = bool(self.preview_rows)
+        self.preview_rows = []
+        self.preview_signature = None
+        if had_preview:
+            self.window.set_app_status("warning", "条件が変更されたため、月次精算プレビューを解除しました。", 7000)
+        self.show_saved_rows()
 
     def refresh_months(self) -> None:
         current = self.month.currentData()
@@ -920,8 +996,8 @@ class MonthlyClosingPage(BasePage):
                 MODES[self.mode.currentText()],
                 self.days.value(),
                 self.ratio.value(),
-                self.manual.value(),
             )
+            self.preview_signature = self.current_signature()
             self.show_preview()
             if any(row["after_balance"] < 0 for row in self.preview_rows):
                 self.window.set_app_status("warning", "残額がマイナスの行があります。", 10000)
@@ -931,19 +1007,31 @@ class MonthlyClosingPage(BasePage):
             self.window.show_error(str(exc))
 
     def save(self, status: str) -> None:
-        if not self.preview_rows:
-            self.preview()
+        if not self.preview_rows or self.preview_signature != self.current_signature():
+            self.window.set_app_status("warning", "現在の条件で計算プレビューを作成してください。", 10000)
+            QMessageBox.warning(self, "警告", "保存前に現在の条件で計算プレビューを作成してください。")
+            return
         negative = any(row["after_balance"] < 0 for row in self.preview_rows)
         if negative:
             self.window.set_app_status("warning", "残額がマイナスの行があります。", 10000)
             if QMessageBox.warning(self, "確認", "残額がマイナスの行があります。保存しますか？", QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
                 return
         self.window.closing_service.save_rows(self.preview_rows, status)
+        self.preview_rows = []
+        self.preview_signature = None
         self.window.refresh_all()
         self.window.show_info("保存しました。")
 
     def cancel_confirm(self) -> None:
-        self.window.closing_service.set_status_for_month(self.year.value(), self.month.currentData(), "draft")
+        selected_rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()})
+        target_rows = [self.displayed_rows[index] for index in selected_rows if index < len(self.displayed_rows)]
+        if not target_rows:
+            target_rows = [row for row in self.displayed_rows if row.get("payment_id") is not None]
+        payment_ids = [int(row["payment_id"]) for row in target_rows if row.get("payment_id") is not None]
+        if not payment_ids:
+            self.window.show_error("確定取消する保存済み行がありません。")
+            return
+        self.window.closing_service.set_status(payment_ids, "draft")
         self.window.refresh_all()
 
     def delete_selected_rows(self) -> None:
@@ -959,16 +1047,18 @@ class MonthlyClosingPage(BasePage):
             return
         if not self.window.verify_delete_password():
             return
-        self.window.closing_service.delete_rows(target_rows)
-        target_keys = {(row["person_id"], row["fiscal_year"], row["target_month"]) for row in target_rows}
-        self.preview_rows = [
-            row for row in self.preview_rows
-            if (row["person_id"], row["fiscal_year"], row["target_month"]) not in target_keys
-        ]
-        if self.preview_rows:
-            self.show_preview()
-        else:
-            self.refresh()
+        saved_rows = [row for row in target_rows if row.get("payment_id") is not None]
+        if saved_rows:
+            self.window.closing_service.delete_rows(saved_rows)
+            self.window.refresh_all()
+        elif self.preview_rows:
+            selected_set = set(selected_rows)
+            self.preview_rows = [row for index, row in enumerate(self.preview_rows) if index not in selected_set]
+            self.preview_signature = self.current_signature() if self.preview_rows else None
+            if self.preview_rows:
+                self.show_preview()
+            else:
+                self.show_saved_rows()
         self.window.set_app_status("ok", "選択行を削除しました。", 7000)
 
     def show_preview(self) -> None:
@@ -977,6 +1067,7 @@ class MonthlyClosingPage(BasePage):
             rows.append(
                 [
                     row["person_name"],
+                    row["target_month"],
                     money(row["previous_balance"]),
                     money(row["monthly_added_amount"]),
                     money(row["before_payment_balance"]),
@@ -990,7 +1081,7 @@ class MonthlyClosingPage(BasePage):
             )
         set_rows(
             self.table,
-            ["人", "前月残額", "当月追加", "支給前残額", "支給日数", "支払総額", "源泉徴収額", "手取額", "月末残額", "状態"],
+            ["人", "対象月", "前月残額", "当月追加", "支給前残額", "支給日数", "支払総額", "源泉徴収額", "手取額", "月末残額", "状態"],
             rows,
             row_colors=[self.window.color_for_person_id(row["person_id"]) for row in self.preview_rows],
         )
@@ -1000,21 +1091,37 @@ class MonthlyClosingPage(BasePage):
                 paint_row(self.table, r, QColor("#f4cccc"))
 
     def refresh(self) -> None:
+        selected_ids = set(self.selected_person_ids())
+        had_preview = bool(self.preview_rows)
+        self._refreshing = True
         self.refresh_months()
         self.persons.clear()
         for person in self.window.person_service.list(active_only=True):
             item = QListWidgetItem(person["name"])
             item.setData(Qt.UserRole, person["person_id"])
             self.persons.addItem(item)
+            if int(person["person_id"]) in selected_ids:
+                item.setSelected(True)
+        self._refreshing = False
+        self.preview_rows = []
+        self.preview_signature = None
+        self.show_saved_rows()
+        if had_preview:
+            self.window.set_app_status("warning", "データ更新のため、月次精算プレビューを解除しました。", 7000)
+
+    def show_saved_rows(self) -> None:
+        if not hasattr(self, "table") or self.month.currentData() is None:
+            return
         rows = self.window.payment_repo.list({"fiscal_year": self.year.value(), "target_month": self.month.currentData()})
         rows = self.window.closing_service.recalculate_saved_rows(rows)
         self.displayed_rows = rows
         set_rows(
             self.table,
-            ["人", "前月残額", "当月追加", "支給前残額", "支給日数", "支払総額", "源泉徴収額", "手取額", "月末残額", "状態"],
+            ["人", "対象月", "前月残額", "当月追加", "支給前残額", "支給日数", "支払総額", "源泉徴収額", "手取額", "月末残額", "状態"],
             [
                 [
                     row["person_name"],
+                    row["target_month"],
                     money(row["previous_balance"]),
                     money(row["monthly_added_amount"]),
                     money(row["before_payment_balance"]),
@@ -1042,10 +1149,8 @@ class SummaryPage(BasePage):
         self.year.setValue(window.config.fiscal_year)
         refresh_btn = QPushButton("更新")
         export_selected_btn = QPushButton("選択人員を出力")
-        delete_selected_btn = QPushButton("選択人員を削除")
         refresh_btn.clicked.connect(self.refresh)
         export_selected_btn.clicked.connect(self.export_selected_people)
-        delete_selected_btn.clicked.connect(self.delete_selected_people)
         self.people = QListWidget()
         self.people.setSelectionMode(QAbstractItemView.MultiSelection)
         self.people.setMaximumHeight(110)
@@ -1055,7 +1160,6 @@ class SummaryPage(BasePage):
         controls.addWidget(self.people)
         controls.addWidget(refresh_btn)
         controls.addWidget(export_selected_btn)
-        controls.addWidget(delete_selected_btn)
         controls.addStretch()
         self.tabs = QTabWidget()
         self.overview = make_table()
@@ -1116,28 +1220,6 @@ class SummaryPage(BasePage):
     def selected_person_ids(self) -> list[int]:
         return [int(item.data(Qt.UserRole)) for item in self.people.selectedItems()]
 
-    def delete_selected_people(self) -> None:
-        selected_ids = set(self.selected_person_ids())
-        table_rows = {index.row() for index in self.overview.selectionModel().selectedRows()}
-        for row_index in table_rows:
-            if row_index < len(self.overview_rows):
-                selected_ids.add(int(self.overview_rows[row_index]["person_id"]))
-        if not selected_ids:
-            self.window.show_error("削除する人員を選択してください。")
-            return
-        message = f"{len(selected_ids)}名を削除します。関連する案件・月次精算も削除されます。続行しますか？"
-        if QMessageBox.warning(self, "確認", message, QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
-            return
-        if not self.window.verify_delete_password():
-            return
-        try:
-            for person_id in selected_ids:
-                self.window.person_service.delete(person_id)
-            self.window.refresh_all()
-            self.window.set_app_status("ok", "年度集計から選択人員を削除しました。", 7000)
-        except Exception as exc:
-            self.window.show_error(str(exc))
-
     def export_selected_people(self) -> None:
         selected_ids = set(self.selected_person_ids())
         if not selected_ids:
@@ -1165,7 +1247,14 @@ class SummaryPage(BasePage):
                 row for row in self.window.payment_repo.list({"fiscal_year": fiscal_year})
                 if int(row["person_id"]) in selected_ids
             ]
-            output = ExcelExporter().export(path, fiscal_year, records, overview, payments)
+            persons = [
+                person for person in self.window.person_service.list(active_only=False)
+                if int(person["person_id"]) in selected_ids
+            ]
+            output = ExcelExporter(
+                self.window.config.resident_tax_rate,
+                self.window.config.nonresident_tax_rate,
+            ).export(path, fiscal_year, records, overview, payments, persons=persons)
             self.window.logs_repo.add("INFO", "SELECTED_PEOPLE_EXPORTED", f"Selected people exported: {output}")
             self.window.set_app_status("ok", f"選択人員を出力しました: {output}", 7000)
         except PermissionError as exc:
@@ -1307,7 +1396,13 @@ class ExportPage(BasePage):
                 records = [row for row in records if int(row["person_id"]) in selected_ids]
                 overview = [row for row in overview if int(row["person_id"]) in selected_ids]
                 payments = [row for row in payments if int(row["person_id"]) in selected_ids]
-            output = ExcelExporter().export(
+            persons = self.window.person_service.list(active_only=False)
+            if selected_ids:
+                persons = [person for person in persons if int(person["person_id"]) in selected_ids]
+            output = ExcelExporter(
+                self.window.config.resident_tax_rate,
+                self.window.config.nonresident_tax_rate,
+            ).export(
                 self.path.text(),
                 fiscal_year,
                 records,
@@ -1318,6 +1413,7 @@ class ExportPage(BasePage):
                 self.include_payments.isChecked(),
                 self.include_items.isChecked(),
                 self.include_tax.isChecked(),
+                persons=persons,
             )
             self.window.logs_repo.add("INFO", "EXCEL_EXPORTED", f"Excel exported: {output}")
             self.message.setText(f"出力しました: {output}")
@@ -1393,6 +1489,7 @@ class SettingsPage(BasePage):
                     f"データベース: {window.config.database_path}",
                     f"バックアップ先: {window.config.backup_path}",
                     f"自動バックアップ間隔: {window.config.auto_backup_interval_minutes}分",
+                    f"自動バックアップ保持数: 最新{window.config.auto_backup_keep_count}個",
                     f"年度開始月: {window.config.fiscal_year_start_month}月",
                     f"居住者税率: {window.config.resident_tax_rate}",
                     f"非居住者税率: {window.config.nonresident_tax_rate}",
@@ -1408,7 +1505,10 @@ class SettingsPage(BasePage):
         backup_layout = QGridLayout(backup_box)
         backup_now_btn = QPushButton("今すぐバックアップ")
         restore_btn = QPushButton("バックアップを読み込む")
-        backup_hint = QLabel("自動バックアップは7分ごとに作成されます。")
+        backup_hint = QLabel(
+            f"自動バックアップは{window.config.auto_backup_interval_minutes}分ごとに作成され、"
+            f"最新{window.config.auto_backup_keep_count}個を保持します。"
+        )
         self.backup_status = QLabel("")
         backup_now_btn.clicked.connect(self.create_backup_now)
         restore_btn.clicked.connect(self.restore_backup)
@@ -1444,8 +1544,7 @@ class SettingsPage(BasePage):
             return
         try:
             self.window.set_app_status("busy", "バックアップ読込中...")
-            before_restore = self.window.backup_service.restore_backup(path)
-            self.window.db.initialize()
+            before_restore = self.window.backup_service.restore_backup(path, self.window.db.initialize)
             self.window.logs_repo.add("INFO", "BACKUP_RESTORED", f"Backup restored: {path}")
             self.window.refresh_all()
             self.backup_status.setText(f"読み込みました: {path}\n復元前バックアップ: {before_restore}")
@@ -1463,6 +1562,20 @@ def make_table() -> QTableWidget:
     table.setEditTriggers(QAbstractItemView.NoEditTriggers)
     table.verticalHeader().setVisible(False)
     return table
+
+
+def style_readable_combo(combo: QComboBox) -> None:
+    font = combo.font()
+    font.setPointSize(max(font.pointSize() + 3, 15))
+    combo.setFont(font)
+    combo.setStyleSheet("QComboBox { min-height: 30px; } QComboBox QAbstractItemView { font-size: 16px; }")
+    combo.view().setFont(font)
+    combo.view().setStyleSheet("QAbstractItemView::item { min-height: 30px; padding: 3px 6px; }")
+
+
+def normalized_color(value: str | None) -> str:
+    color = QColor(value or "#dbeafe")
+    return color.name().lower() if color.isValid() else "#dbeafe"
 
 
 def set_rows(

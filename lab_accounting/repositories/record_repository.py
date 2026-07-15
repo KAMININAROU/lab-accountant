@@ -71,6 +71,16 @@ class RecordRepository:
     def delete(self, record_id: int) -> None:
         self.db.execute("DELETE FROM accounting_records WHERE record_id = ?", (record_id,))
 
+    def delete_many(self, record_ids: list[int]) -> None:
+        if not record_ids:
+            return
+        placeholders = ",".join("?" for _ in record_ids)
+        with self.db.transaction() as conn:
+            conn.execute(
+                f"DELETE FROM accounting_records WHERE record_id IN ({placeholders})",
+                tuple(record_ids),
+            )
+
     def monthly_added(self, person_id: int, fiscal_year: int, target_month: str) -> float:
         rows = self.db.query(
             """
@@ -93,6 +103,20 @@ class RecordRepository:
              WHERE person_id = ?
                AND fiscal_year = ?
                AND target_month <= ?
+               AND record_type NOT IN ('payment', '支給')
+            """,
+            (person_id, fiscal_year, target_month),
+        )
+        return float(rows[0]["total"] or 0)
+
+    def total_added_before(self, person_id: int, fiscal_year: int, target_month: str) -> float:
+        rows = self.db.query(
+            """
+            SELECT COALESCE(SUM(amount), 0) AS total
+              FROM accounting_records
+             WHERE person_id = ?
+               AND fiscal_year = ?
+               AND target_month < ?
                AND record_type NOT IN ('payment', '支給')
             """,
             (person_id, fiscal_year, target_month),
@@ -133,6 +157,20 @@ class RecordRepository:
              WHERE person_id = ?
                AND fiscal_year = ?
                AND target_month < ?
+               AND record_type IN ('payment', '支給')
+            """,
+            (person_id, fiscal_year, target_month),
+        )
+        return float(rows[0]["total"] or 0)
+
+    def manual_payment_until(self, person_id: int, fiscal_year: int, target_month: str) -> float:
+        rows = self.db.query(
+            """
+            SELECT COALESCE(SUM(amount), 0) AS total
+              FROM accounting_records
+             WHERE person_id = ?
+               AND fiscal_year = ?
+               AND target_month <= ?
                AND record_type IN ('payment', '支給')
             """,
             (person_id, fiscal_year, target_month),

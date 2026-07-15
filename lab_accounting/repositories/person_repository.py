@@ -7,12 +7,18 @@ class PersonRepository:
     def __init__(self, db: Database) -> None:
         self.db = db
 
-    def list(self, active_only: bool = False) -> list[dict]:
+    def list(self, active_only: bool = False, group_by_color: bool = False) -> list[dict]:
         sql = "SELECT * FROM persons"
         params: list[object] = []
         if active_only:
             sql += " WHERE active = 1"
-        sql += " ORDER BY active DESC, name COLLATE NOCASE"
+        if group_by_color:
+            sql += (
+                " ORDER BY LOWER(TRIM(COALESCE(NULLIF(color, ''), '#dbeafe'))), "
+                "active DESC, name COLLATE NOCASE, person_id"
+            )
+        else:
+            sql += " ORDER BY active DESC, name COLLATE NOCASE, person_id"
         return [dict(row) for row in self.db.query(sql, params)]
 
     def get(self, person_id: int) -> dict | None:
@@ -23,15 +29,16 @@ class PersonRepository:
         return self.db.execute(
             """
             INSERT INTO persons (
-                name, display_name, name_kana, color, resident_type, tax_rate,
+                name, display_name, name_kana, memo, color, resident_type, tax_rate,
                 daily_gross_amount, daily_net_amount, active
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 values["name"],
                 values.get("display_name") or values["name"],
                 values.get("name_kana") or "",
+                values.get("memo") or "",
                 values.get("color") or "#dbeafe",
                 values.get("resident_type") or "resident",
                 values.get("tax_rate"),
@@ -45,7 +52,7 @@ class PersonRepository:
         self.db.execute(
             """
             UPDATE persons
-               SET name = ?, display_name = ?, name_kana = ?, color = ?,
+               SET name = ?, display_name = ?, name_kana = ?, memo = ?, color = ?,
                    resident_type = ?, tax_rate = ?, daily_gross_amount = ?,
                    daily_net_amount = ?, active = ?, updated_at = CURRENT_TIMESTAMP
              WHERE person_id = ?
@@ -54,6 +61,7 @@ class PersonRepository:
                 values["name"],
                 values.get("display_name") or values["name"],
                 values.get("name_kana") or "",
+                values.get("memo") or "",
                 values.get("color") or "#dbeafe",
                 values.get("resident_type") or "resident",
                 values.get("tax_rate"),
@@ -71,7 +79,14 @@ class PersonRepository:
         )
 
     def delete(self, person_id: int) -> None:
-        with self.db.connect() as conn:
-            conn.execute("DELETE FROM monthly_payments WHERE person_id = ?", (person_id,))
-            conn.execute("DELETE FROM accounting_records WHERE person_id = ?", (person_id,))
-            conn.execute("DELETE FROM persons WHERE person_id = ?", (person_id,))
+        self.delete_many([person_id])
+
+    def delete_many(self, person_ids: list[int]) -> None:
+        if not person_ids:
+            return
+        placeholders = ",".join("?" for _ in person_ids)
+        params = tuple(person_ids)
+        with self.db.transaction() as conn:
+            conn.execute(f"DELETE FROM monthly_payments WHERE person_id IN ({placeholders})", params)
+            conn.execute(f"DELETE FROM accounting_records WHERE person_id IN ({placeholders})", params)
+            conn.execute(f"DELETE FROM persons WHERE person_id IN ({placeholders})", params)

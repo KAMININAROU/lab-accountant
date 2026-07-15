@@ -9,8 +9,8 @@ class PersonService:
         self.repo = repo
         self.logs = logs
 
-    def list(self, active_only: bool = False) -> list[dict]:
-        return self.repo.list(active_only)
+    def list(self, active_only: bool = False, group_by_color: bool = False) -> list[dict]:
+        return self.repo.list(active_only, group_by_color)
 
     def save(self, values: dict, person_id: int | None = None) -> int | None:
         if not values.get("name"):
@@ -32,7 +32,14 @@ class PersonService:
         self.logs.add("INFO", "PERSON_ACTIVE_CHANGED", f"Person active changed: {person_id}")
 
     def delete(self, person_id: int) -> None:
-        person = self.repo.get(person_id)
-        name = person["name"] if person else str(person_id)
-        self.repo.delete(person_id)
-        self.logs.add("INFO", "PERSON_DELETED", f"Person deleted with related records/payments: {name}")
+        self.delete_many([person_id])
+
+    def delete_many(self, person_ids: list[int]) -> None:
+        people = [self.repo.get(person_id) for person_id in person_ids]
+        names = [person["name"] if person else str(person_id) for person_id, person in zip(person_ids, people)]
+        self.repo.delete_many(person_ids)
+        self.logs.add(
+            "INFO",
+            "PERSON_DELETED",
+            f"People deleted with related records/payments: {len(person_ids)}; " + " | ".join(names),
+        )

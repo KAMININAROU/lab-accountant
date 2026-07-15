@@ -13,7 +13,6 @@ def calculate_monthly_payment(
     calculation_mode: str,
     payment_days: float = 0.0,
     distribution_ratio: float = 1.0,
-    manual_net_amount: float = 0.0,
 ) -> dict[str, float]:
     before_payment_balance = float(previous_balance) + float(monthly_added_amount)
 
@@ -24,9 +23,6 @@ def calculate_monthly_payment(
     elif calculation_mode == "ratio":
         net_amount = floor(before_payment_balance * float(distribution_ratio))
         net_amount = max(net_amount, 0.0)
-        tax_result = calc_from_net(net_amount, tax_rate)
-    elif calculation_mode == "manual":
-        net_amount = max(float(manual_net_amount), 0.0)
         tax_result = calc_from_net(net_amount, tax_rate)
     else:
         raise ValueError("Invalid calculation mode")
