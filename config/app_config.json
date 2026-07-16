@@ -1,5 +1,5 @@
 {
-  "app_name": "海岸港湾研究室委託報酬管理システム",
+  "app_name": "委託報酬管理システム",
   "database_path": "lab_accounting.db",
   "fiscal_year": 2026,
   "fiscal_year_start_month": 4,
@@ -10,8 +10,8 @@
   "amount_decimal_places": 0,
   "default_export_path": "exports",
   "backup_path": "backups",
-  "auto_backup_interval_minutes": 5,
+  "auto_backup_interval_minutes": 8,
   "auto_backup_keep_count": 5,
-  "app_version": "1.1.0",
-  "app_description": "研究室の業務委託報酬・使用費目を管理します。"
+  "app_version": "1.2.1",
+  "app_description": "研究室の業務委託報酬・使用費目を管理します。これで完結～"
 }

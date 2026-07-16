@@ -220,3 +220,5 @@ __marimo__/
 history.txt
 # System
 .DS_Store
+# Debug files
+debug_splash.py
